@@ -7,10 +7,11 @@ import {
   ActivityIndicator,
   Dimensions,
   TouchableOpacity,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { getVideoDetails } from '../api/youtube';
+import { getVideoDetails, getChannelDetails } from '../api/youtube';
 import { Ionicons } from '@expo/vector-icons';
 import { TetColors } from '../theme/colors';
 
@@ -26,33 +27,47 @@ const VideoPlayer = ({ route, navigation }) => {
 
   useEffect(() => {
     const loadVideoDetails = async () => {
+      // 1. Validate ID
       if (!initialVideo.id) {
         setError('Invalid video ID');
         setLoading(false);
         return;
       }
 
-      // If video already has statistics, don't fetch again
-      if (initialVideo.statistics) {
-        setLoading(false);
-        return;
+      // 2. Fetch missing video stats
+      let currentVideo = { ...initialVideo };
+      if (!currentVideo.statistics) {
+        try {
+          const data = await getVideoDetails(initialVideo.id);
+          if (data.items && data.items.length > 0) {
+            currentVideo = {
+              ...currentVideo,
+              snippet: data.items[0].snippet,
+              statistics: data.items[0].statistics,
+            };
+          }
+        } catch (err) {
+          console.error('Error loading video details:', err);
+        }
       }
 
-      try {
-        const data = await getVideoDetails(initialVideo.id);
-        if (data.items && data.items.length > 0) {
-          setVideo({
-            ...initialVideo,
-            snippet: data.items[0].snippet,
-            statistics: data.items[0].statistics,
-          });
+      // 3. Fetch missing channel avatar
+      if (!currentVideo.channelAvatar && currentVideo.snippet?.channelId) {
+        try {
+          const channelData = await getChannelDetails([currentVideo.snippet.channelId]);
+          if (channelData.items && channelData.items.length > 0) {
+            const channelItem = channelData.items[0];
+            currentVideo.channelAvatar = channelItem.snippet?.thumbnails?.default?.url;
+            // Also get subscriber count if we want to show it accurately
+            // currentVideo.subscriberCount = channelItem.statistics?.subscriberCount; 
+          }
+        } catch (err) {
+          console.error('Error fetching channel avatar:', err);
         }
-      } catch (err) {
-        console.error('Error loading video details:', err);
-        setError('Failed to load video details');
-      } finally {
-        setLoading(false);
       }
+
+      setVideo(currentVideo);
+      setLoading(false);
     };
 
     loadVideoDetails();
@@ -179,9 +194,16 @@ const VideoPlayer = ({ route, navigation }) => {
           <View style={styles.channelContainer}>
             <View style={styles.channelInfo}>
               <View style={styles.channelAvatar}>
-                <Text style={styles.channelInitial}>
-                  {channelTitle.charAt(0).toUpperCase()}
-                </Text>
+                {video.channelAvatar ? (
+                  <Image
+                    source={{ uri: video.channelAvatar }}
+                    style={styles.avatarImage}
+                  />
+                ) : (
+                  <Text style={styles.channelInitial}>
+                    {channelTitle.charAt(0).toUpperCase()}
+                  </Text>
+                )}
               </View>
               <View style={styles.channelDetails}>
                 <Text style={styles.channelName}>{channelTitle}</Text>
@@ -329,6 +351,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   channelInitial: {
     color: '#000000',
