@@ -2,21 +2,23 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
-  ScrollView,
   StyleSheet,
   ActivityIndicator,
   Dimensions,
   TouchableOpacity,
   Image,
+  FlatList,
+  StatusBar,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { getVideoDetails, getChannelDetails } from '../api/youtube';
+import { getVideoDetails, getChannelDetails, getRandomVideos } from '../api/youtube';
 import { Ionicons } from '@expo/vector-icons';
 import { TetColors } from '../theme/colors';
+import VideoCard from '../components/VideoCard';
 
 const { width } = Dimensions.get('window');
-const VIDEO_HEIGHT = (width * 9) / 16; // 16:9 aspect ratio
+const VIDEO_HEIGHT = (width * 9) / 16;
 
 const VideoPlayer = ({ route, navigation }) => {
   const { video: initialVideo } = route.params;
@@ -24,18 +26,21 @@ const VideoPlayer = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState(null);
+  const [relatedVideos, setRelatedVideos] = useState([]);
+  const [relatedLoading, setRelatedLoading] = useState(true);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
 
   useEffect(() => {
-    const loadVideoDetails = async () => {
-      // 1. Validate ID
-      if (!initialVideo.id) {
+    const loadData = async () => {
+      // 1. Load Video Details
+      let currentVideo = { ...initialVideo };
+
+      if (!currentVideo.id) {
         setError('Invalid video ID');
         setLoading(false);
         return;
       }
 
-      // 2. Fetch missing video stats
-      let currentVideo = { ...initialVideo };
       if (!currentVideo.statistics) {
         try {
           const data = await getVideoDetails(initialVideo.id);
@@ -51,15 +56,14 @@ const VideoPlayer = ({ route, navigation }) => {
         }
       }
 
-      // 3. Fetch missing channel avatar
+      // 2. Load Channel Avatar if missing
       if (!currentVideo.channelAvatar && currentVideo.snippet?.channelId) {
         try {
           const channelData = await getChannelDetails([currentVideo.snippet.channelId]);
           if (channelData.items && channelData.items.length > 0) {
             const channelItem = channelData.items[0];
             currentVideo.channelAvatar = channelItem.snippet?.thumbnails?.default?.url;
-            // Also get subscriber count if we want to show it accurately
-            // currentVideo.subscriberCount = channelItem.statistics?.subscriberCount; 
+            currentVideo.subscriberCount = channelItem.statistics?.subscriberCount;
           }
         } catch (err) {
           console.error('Error fetching channel avatar:', err);
@@ -68,80 +72,69 @@ const VideoPlayer = ({ route, navigation }) => {
 
       setVideo(currentVideo);
       setLoading(false);
+
+      // 3. Load Related/Random Videos
+      try {
+        const randomData = await getRandomVideos(10);
+
+        // Get avatars for related videos too for a complete look
+        const relatedItems = randomData.items || [];
+        const channelIds = relatedItems.map(item => item.snippet?.channelId).filter(Boolean);
+        if (channelIds.length > 0) {
+          const channelData = await getChannelDetails(channelIds);
+          const channelMap = {};
+          channelData.items?.forEach(ch => {
+            channelMap[ch.id] = ch.snippet?.thumbnails?.default?.url;
+          });
+          const relatedWithAvatars = relatedItems.map(v => ({
+            ...v,
+            channelAvatar: channelMap[v.snippet?.channelId]
+          }));
+          setRelatedVideos(relatedWithAvatars);
+        } else {
+          setRelatedVideos(relatedItems);
+        }
+      } catch (err) {
+        console.error("Error loading related videos", err);
+      } finally {
+        setRelatedLoading(false);
+      }
     };
 
-    loadVideoDetails();
+    loadData();
   }, [initialVideo]);
 
   const onStateChange = useCallback((state) => {
-    if (state === 'playing') {
-      setPlaying(true);
-    } else if (state === 'paused') {
-      setPlaying(false);
-    }
-  }, []);
-
-  const togglePlaying = useCallback(() => {
-    setPlaying((prev) => !prev);
+    if (state === 'playing') setPlaying(true);
+    if (state === 'paused') setPlaying(false);
   }, []);
 
   const formatNumber = (num) => {
     if (!num) return '0';
     const number = parseInt(num);
-    if (number >= 1000000) {
-      return (number / 1000000).toFixed(1) + 'M';
-    }
-    if (number >= 1000) {
-      return (number / 1000).toFixed(1) + 'K';
-    }
+    if (number >= 1000000) return (number / 1000000).toFixed(1) + 'M';
+    if (number >= 1000) return (number / 1000).toFixed(1) + 'K';
     return number.toLocaleString();
   };
 
   const formatDate = (dateString) => {
     if (!dateString) return '';
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
+    return date.toLocaleDateString('vi-VN', { year: 'numeric', month: 'long', day: 'numeric' });
   };
 
-  if (loading) {
+  const renderHeader = () => {
+    const videoId = video.id;
+    const title = video.snippet?.title || 'No title';
+    const channelTitle = video.snippet?.channelTitle || 'Unknown channel';
+    const description = video.snippet?.description || '';
+    const viewCount = formatNumber(video.statistics?.viewCount);
+    const likeCount = formatNumber(video.statistics?.likeCount);
+    const publishedAt = formatDate(video.snippet?.publishedAt);
+    const subscriberCount = video.subscriberCount ? formatNumber(video.subscriberCount) : '1.2M';
+
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={TetColors.gold} />
-          <Text style={styles.loadingText}>Đang tải video...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (error) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.errorContainer}>
-          <View style={styles.errorIconContainer}>
-            <Ionicons name="alert-circle-outline" size={64} color={TetColors.red} />
-          </View>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  const videoId = video.id;
-  const title = video.snippet?.title || 'No title';
-  const channelTitle = video.snippet?.channelTitle || 'Unknown channel';
-  const description = video.snippet?.description || 'No description available';
-  const viewCount = formatNumber(video.statistics?.viewCount);
-  const likeCount = formatNumber(video.statistics?.likeCount);
-  const publishedAt = formatDate(video.snippet?.publishedAt);
-
-  return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <View>
         <View style={styles.playerContainer}>
           <YoutubePlayer
             height={VIDEO_HEIGHT}
@@ -152,80 +145,112 @@ const VideoPlayer = ({ route, navigation }) => {
           />
         </View>
 
-        <View style={styles.detailsContainer}>
-          {/* Title */}
-          <Text style={styles.title}>{title}</Text>
+        <View style={styles.infoContainer}>
+          <Text style={styles.videoTitle} numberOfLines={2}>{title}</Text>
 
-          {/* Stats and Actions Row */}
-          <View style={styles.statsRow}>
-            <View style={styles.viewsContainer}>
-              <Text style={styles.viewsText}>{viewCount} lượt xem</Text>
-              <Text style={styles.dateText}>{publishedAt}</Text>
-            </View>
+          <View style={styles.metaRow}>
+            <Text style={styles.metaText}>{viewCount} lượt xem</Text>
+            <Text style={styles.metaDot}>•</Text>
+            <Text style={styles.metaText}>{publishedAt}</Text>
           </View>
 
-          {/* Action Buttons */}
-          <View style={styles.actionsContainer}>
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="thumbs-up-outline" size={24} color={TetColors.textPrimary} />
+          {/* Channel Section */}
+          <View style={styles.channelRow}>
+            <View style={styles.channelInfo}>
+              <View style={styles.avatarContainer}>
+                {video.channelAvatar ? (
+                  <Image source={{ uri: video.channelAvatar }} style={styles.avatar} />
+                ) : (
+                  <Text style={styles.avatarText}>{channelTitle.charAt(0)}</Text>
+                )}
+              </View>
+              <View>
+                <Text style={styles.channelName} numberOfLines={1}>{channelTitle}</Text>
+                <Text style={styles.subscriberText}>{subscriberCount} người đăng ký</Text>
+              </View>
+            </View>
+            <TouchableOpacity style={styles.subscribeBtn}>
+              <Text style={styles.subscribeBtnText}>Đăng ký</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Action Buttons ScrollView */}
+          <View style={styles.actionsList}>
+            <TouchableOpacity style={styles.actionCapsule}>
+              <Ionicons name="thumbs-up-outline" size={20} color={TetColors.textPrimary} />
               <Text style={styles.actionText}>{likeCount}</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="thumbs-down-outline" size={24} color={TetColors.textPrimary} />
-              <Text style={styles.actionText}>Không thích</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="share-outline" size={24} color={TetColors.textPrimary} />
+            <TouchableOpacity style={styles.actionCapsule}>
+              <Ionicons name="share-social-outline" size={20} color={TetColors.textPrimary} />
               <Text style={styles.actionText}>Chia sẻ</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="download-outline" size={24} color={TetColors.textPrimary} />
+            <TouchableOpacity style={styles.actionCapsule}>
+              <Ionicons name="download-outline" size={20} color={TetColors.textPrimary} />
               <Text style={styles.actionText}>Tải xuống</Text>
             </TouchableOpacity>
-          </View>
 
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Channel Section */}
-          <View style={styles.channelContainer}>
-            <View style={styles.channelInfo}>
-              <View style={styles.channelAvatar}>
-                {video.channelAvatar ? (
-                  <Image
-                    source={{ uri: video.channelAvatar }}
-                    style={styles.avatarImage}
-                  />
-                ) : (
-                  <Text style={styles.channelInitial}>
-                    {channelTitle.charAt(0).toUpperCase()}
-                  </Text>
-                )}
-              </View>
-              <View style={styles.channelDetails}>
-                <Text style={styles.channelName}>{channelTitle}</Text>
-                <Text style={styles.subscriberCount}>1.2M người đăng ký</Text>
-              </View>
-            </View>
-            <TouchableOpacity style={styles.subscribeButton}>
-              <Text style={styles.subscribeText}>ĐĂNG KÝ</Text>
+            <TouchableOpacity style={styles.actionCapsule}>
+              <Ionicons name="bookmark-outline" size={20} color={TetColors.textPrimary} />
+              <Text style={styles.actionText}>Lưu</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Description */}
-          <View style={styles.descriptionContainer}>
-            <Text style={styles.description} numberOfLines={3}>
+          {/* Description Card */}
+          <TouchableOpacity
+            style={styles.descriptionCard}
+            onPress={() => setDescriptionExpanded(!descriptionExpanded)}
+            activeOpacity={0.9}
+          >
+            <Text style={styles.descriptionTitle}>Mô tả</Text>
+            <Text style={styles.descriptionText} numberOfLines={descriptionExpanded ? undefined : 3}>
               {description}
             </Text>
+            <Text style={styles.moreText}>
+              {descriptionExpanded ? 'Thu gọn' : 'Xem thêm'}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Comments Preview */}
+          <View style={styles.commentsPreview}>
+            <View style={styles.commentsHeader}>
+              <Text style={styles.commentsTitle}>Bình luận</Text>
+              <Text style={styles.commentsCount}>{formatNumber(video.statistics?.commentCount || 1024)}</Text>
+            </View>
+            <View style={styles.commentPlaceholder}>
+              <View style={styles.commentAvatar} />
+              <View style={styles.commentInput}>
+                <Text style={styles.commentInputText}>Thêm bình luận...</Text>
+              </View>
+            </View>
           </View>
+
+          <Text style={styles.sectionTitle}>Video liên quan</Text>
         </View>
-      </ScrollView>
+      </View>
+    );
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ActivityIndicator size="large" color={TetColors.gold} style={{ marginTop: 50 }} />
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <StatusBar barStyle="light-content" backgroundColor="#000" />
+      <FlatList
+        data={relatedVideos}
+        renderItem={({ item }) => <VideoCard video={item} onPress={() => navigation.push('VideoPlayer', { video: item })} />}
+        keyExtractor={(item) => item.id}
+        ListHeaderComponent={renderHeader}
+        ListFooterComponent={relatedLoading ? <ActivityIndicator color={TetColors.gold} style={{ margin: 20 }} /> : null}
+        showsVerticalScrollIndicator={false}
+      />
     </SafeAreaView>
   );
 };
@@ -235,164 +260,180 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: TetColors.background,
   },
-  scrollView: {
-    flex: 1,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: TetColors.background,
-  },
-  loadingText: {
-    color: TetColors.textPrimary,
-    marginTop: 16,
-    fontSize: 16,
-    fontWeight: '500',
-    letterSpacing: 0.3,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-    backgroundColor: TetColors.background,
-  },
-  errorIconContainer: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: `${TetColors.red}15`,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  errorText: {
-    color: TetColors.textPrimary,
-    marginTop: 16,
-    fontSize: 16,
-    textAlign: 'center',
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
   playerContainer: {
     width: '100%',
-    backgroundColor: '#000000',
+    backgroundColor: '#000',
+    marginBottom: 12,
   },
   webView: {
     opacity: 0.99,
   },
-  detailsContainer: {
-    padding: 16,
+  infoContainer: {
+    paddingHorizontal: 16,
   },
-  title: {
+  videoTitle: {
     color: TetColors.textPrimary,
-    fontSize: 18,
-    fontWeight: '600',
-    lineHeight: 24,
+    fontSize: 20,
+    fontWeight: '700',
     marginBottom: 8,
+    lineHeight: 28,
   },
-  statsRow: {
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  metaText: {
+    color: TetColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  metaDot: {
+    color: TetColors.textSecondary,
+    fontSize: 13,
+    marginHorizontal: 8,
+  },
+  channelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  viewsContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  viewsText: {
-    color: TetColors.textSecondary,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  dateText: {
-    color: TetColors.textTertiary,
-    fontSize: 14,
-  },
-  actionsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: 8,
-    marginBottom: 8,
-  },
-  actionButton: {
-    alignItems: 'center',
-    gap: 4,
-  },
-  actionText: {
-    color: TetColors.textSecondary,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: TetColors.border,
-    marginVertical: 12,
-  },
-  channelContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    marginBottom: 20,
     paddingVertical: 12,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: TetColors.backgroundElevated,
   },
   channelInfo: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
   },
-  channelAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  avatarContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: TetColors.gold,
+    marginRight: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
     overflow: 'hidden',
   },
-  avatarImage: {
+  avatar: {
     width: '100%',
     height: '100%',
   },
-  channelInitial: {
-    color: '#000000',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  channelDetails: {
-    flex: 1,
+  avatarText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#000',
   },
   channelName: {
     color: TetColors.textPrimary,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
     marginBottom: 2,
   },
-  subscriberCount: {
-    color: TetColors.textTertiary,
+  subscriberText: {
+    color: TetColors.textSecondary,
     fontSize: 12,
   },
-  subscribeButton: {
+  subscribeBtn: {
     backgroundColor: TetColors.gold,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 18,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 24,
   },
-  subscribeText: {
-    color: '#000000',
+  subscribeBtnText: {
+    color: '#000',
     fontSize: 14,
     fontWeight: '700',
   },
-  descriptionContainer: {
-    paddingVertical: 8,
+  actionsList: {
+    flexDirection: 'row',
+    marginBottom: 20,
+    gap: 12,
+    flexWrap: 'wrap',
   },
-  description: {
+  actionCapsule: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: TetColors.backgroundElevated,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    gap: 8,
+  },
+  actionText: {
+    color: TetColors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  descriptionCard: {
+    backgroundColor: TetColors.backgroundElevated,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 20,
+  },
+  descriptionTitle: {
+    color: TetColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  descriptionText: {
+    color: TetColors.textSecondary,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  moreText: {
+    color: TetColors.gold,
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  commentsPreview: {
+    marginBottom: 24,
+  },
+  commentsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 8,
+  },
+  commentsTitle: {
+    color: TetColors.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  commentsCount: {
     color: TetColors.textSecondary,
     fontSize: 14,
-    lineHeight: 20,
+  },
+  commentPlaceholder: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: TetColors.backgroundElevated,
+    padding: 8,
+    borderRadius: 24, // Pill shape input
+  },
+  commentAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: TetColors.textTertiary,
+    marginRight: 12,
+    marginLeft: 4,
+  },
+  commentInputText: {
+    color: TetColors.textSecondary,
+    fontSize: 14,
+  },
+  sectionTitle: {
+    color: TetColors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 12,
+    marginTop: 8,
   },
 });
 
